@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "util.h"
 #include "ff.h"
@@ -339,7 +340,7 @@ char * CONFIG_getKey(FIL * file, char * keyToFind){
                 strcpy(ret, value);
                 vPortFree(rowBuffer);
                 
-                //TERM_printDebug(TERM_handle, "key matches! final value return=\"%s\" ", ret);
+                TERM_printDebug(TERM_handle, "key matches! final value return=\"%s\" ", ret);
                 return ret;
             }
         }
@@ -359,4 +360,325 @@ char * CONFIG_getKey(FIL * file, char * keyToFind){
 uint32_t isAsciiSpecialCharacter(char c){
     if(c < 32) return 1;
     if(c > 127) return 1;
+    return 0;
+}
+
+uint32_t isAsciiNumber(char c){
+    if(c >= '0' && c <= '9') return 1;
+    return 0;
+}
+
+/*
+ * Fixed point atoi function that supports multipliers like k,m,M,c,d etc.
+ * 
+ * input string must start with a number, otherwise 0 is returned. It will scan until either a null terminator is reached or strlen chars have been read
+ * 
+ * ignoreUnit will make the function not return in an error state if the string contains a unit at the end (like for example "1sec")
+ * 
+ *      NOTE: if the returned value would contain an integer overflow due to an excessively large input number a 0 is returned instead
+ *      NOTE: any numbers after the last digit in the fixed point return will be ignored
+ */
+
+static int32_t ctoi(char c){
+    if(!isAsciiNumber(c)) return 0;
+    return c - '0';  //if we are sure that the char is a number, then we can convert it by subtracting the offset of ascii '0' from it
+}
+
+static int32_t getExponent(char c){
+    if(c == 'f')    return -15;
+    if(c == 'p')    return -12;
+    if(c == 'n')    return -9;
+    if(c == 'u' || c == 230) return -6;    //ascii 230 is the greek micro
+    if(c == 'm')    return -3;
+    if(c == 'c')    return -2;
+    if(c == 'd')    return -1;
+    if(c == '.')    return 0;
+    if(c == 'h')    return 2;
+    if(c == 'k')    return 3;
+    if(c == 'M')    return 6;
+    if(c == 'G')    return 9;
+    if(c == 'T')    return 12;
+    if(c == 'P')    return 15;
+    
+    if(isAsciiNumber(c)) return 0xffffffff;
+    return 0x7fffffff;
+}
+
+//precalculated exponents that are reasonable for a int32_t number
+static int32_t exponentTable[10] = {
+1, //10 ^ 0
+10, //10 ^ 1
+100, //10 ^ 2
+1000, //10 ^ 3
+10000, //10 ^ 4
+100000, //10 ^ 5
+1000000, //10 ^ 6
+10000000, //10 ^ 7
+100000000, //10 ^ 8
+1000000000, //10 ^ 9
+};
+
+int32_t atoiFP(char * a, uint32_t strlen, int32_t baseExponent, uint32_t ignoreUnit){
+    int32_t ret = 0;
+    
+    enum {waitStart, waitMultiplier, waitEnd, waitE_Exponent} state = waitStart;
+    
+    int32_t currentNumberPositionExponent = 0;
+    
+    uint32_t isNumberNegative = 0;
+    uint32_t isExponentADot = 0;
+    uint32_t breakBit = 0;
+    
+    char* startOfNumber = NULL;
+    char* startOfNumberExponent = NULL;
+    
+    //iterate through the string
+    while(*a != 0 && strlen-- && !breakBit){
+        //TERM_printDebug(TERM_handle, "\r\n\nscanning letter '%c' (%02x) ", *a, *a);
+        
+        int32_t currentExponent = getExponent(*a);
+        
+        //which state are we in?
+        switch(state){
+            case waitStart:
+                //skip any leading spaces
+                if(*a != ' '){
+                    //found a non space char, is it a number?
+                    if(isAsciiNumber(*a)){
+                        //TERM_printDebug(TERM_handle, "\t found start of number ");
+                        //yes, start of number to convert
+                        startOfNumber = a;
+                        state = waitMultiplier;
+                        
+                    }else if(*a == '.'){
+                        //we got a dot as the first char, skip waiting for a first exponent as we already have one here
+                        startOfNumber = a;
+                        currentNumberPositionExponent = 0;
+                        state = waitEnd;
+                        isExponentADot = 1;
+                        
+                    }else if(*a == '-'){
+                        //no, but the current character is a minus sign, invert the sign of the return number
+                        isNumberNegative = !isNumberNegative;
+                        //TERM_printDebug(TERM_handle, "\tfound sign (number is now %d) ", isNumberNegative ? "negative" : "positive");
+                        
+                    }else if(*a != '+'){    //a number string with a leading plus is also valid, but we don't need to do anything with it
+                        //TERM_printDebug(TERM_handle, "\tfound sign (number is now %d) ", isNumberNegative ? "negative" : "positive");
+                        //no, apparently the string doesn't start with a number => invalid :(
+                        return 0;
+                    }
+                }
+                break;
+            case waitMultiplier:
+                if(currentExponent == 0x7fffffff){
+                    //current character is neither a valid exponent designator or a number. we likely reached the end of the string we need to parse
+                    
+                    //check if by any chance this is an 'e' and there is also at least one more char in this string we can scan
+                    if((*a == 'e' || *a == 'E') && strlen){
+                        //yes it is
+                        if(*(a+1) == '-' || isAsciiNumber(*(a+1))){
+                            //TERM_printDebug(TERM_handle, "\tfound start of exponent string ");
+                            //and it is also a number, yay. That means we must now scan for the end of the added exponent
+                            startOfNumberExponent = a + 1;
+                            state = waitE_Exponent;
+                        }else{
+                            //TERM_printDebug(TERM_handle, "\tpotential start of exponent string was invalid ");
+                            //break out of the loop and continue on to the conversion
+                            breakBit = 1;
+                            break;
+                        }
+                    }else{
+                        //TERM_printDebug(TERM_handle, "\tend of number ");
+                        //break out of the loop and continue on to the conversion
+                        breakBit = 1;
+                        break;
+                    }
+                    
+                }else if(currentExponent != 0xffffffff){
+                        
+                    //we found an exponent of some description. remember its value as we continue through the string
+                    currentNumberPositionExponent = currentExponent;
+                    state = waitEnd;
+                    
+                    //now check if the exponent is a dot, if so we can accept another real exponent at the end of the string
+                    if(currentExponent == 0) isExponentADot = 1;
+                    
+                    //TERM_printDebug(TERM_handle, "\tfound a first exponent (%d) currNumExp=%d ", currentExponent, currentNumberPositionExponent);
+                }else{
+                    //TERM_printDebug(TERM_handle, "\tthat's just a digit :) ");
+                }
+                break;
+            case waitEnd:
+                if(!isAsciiNumber(*a)){
+                    //we've reached another non number
+                    
+                    //check if the first non number found was a dot and we currently have a valid exponent
+                    if(isExponentADot){
+                        
+                        //yes it was. Now check if we have reached the start of a numerical exponent string
+                        if((*a == 'e' || *a == 'E') && strlen){
+                            //yes it is
+                            if(*(a+1) == '-' || isAsciiNumber(*(a+1))){
+                                //TERM_printDebug(TERM_handle, "\tfound exponent string start ");
+                                //and it is also a number, yay. That means we must now scan for the end of the added exponent
+                                startOfNumberExponent = a + 1;
+                                state = waitE_Exponent;
+                            }else{
+                                //TERM_printDebug(TERM_handle, "\tfound non exponent string start ");
+                                
+                                //break out of the loop and continue on to the conversion
+                                breakBit = 1;
+                                break;
+                            }
+                        }else if(currentExponent != 0x7fffffff){
+                            //TERM_printDebug(TERM_handle, "\tfound exponent after string %d ", currentExponent);
+                            
+                            currentNumberPositionExponent += currentExponent;
+                    
+                            //break out of the loop and continue on to the conversion
+                            breakBit = 1;
+                            break;
+                        }else{
+                            //TERM_printDebug(TERM_handle, "\tfound end of number string without exponent after dot");
+                            
+                            //a dot was the first exponent and we have now reached the first non digit after it, but it isn't a valid exponent (so probably a unit)
+                            //check if we are allowed to ignore this and convert anyway or must return with an error
+                            if(!ignoreUnit) return 0;
+
+                            //otherwise break out of the loop and continue on to the conversion
+                            breakBit = 1;
+                            break;
+                        }
+                    }else{
+                        //TERM_printDebug(TERM_handle, "\tfound end of number string with exponent ");
+                        //no we already got a valid exponent or aren't even scanning one now. We must be at the start of the unit
+                        //check if we are allowed to ignore this and convert anyway or must return with an error
+                        if(!ignoreUnit) return 0;
+                    
+                        //otherwise break out of the loop and continue on to the conversion
+                        breakBit = 1;
+                        break;
+                    }
+                }else{
+                    //we are scanning a number, make sure to decrease the current numbers exponent as we are after the point
+                    currentNumberPositionExponent--;
+                    //TERM_printDebug(TERM_handle, "\tcurrNumExp=%d ", currentNumberPositionExponent);
+                }
+                break;
+                
+            case waitE_Exponent:
+                //we have passed a "e" in the string and must now find the end of the number after it
+                
+                //check if we are still scanning a number or the sign (but sign only if it is the first char in the exponent string)
+                if(!isAsciiNumber(*a) && !((*a == '-' || *a == '+') && a == startOfNumberExponent)){
+                    //TERM_printDebug(TERM_handle, "\tfound end of exponent string ");
+                    //found first non sign and non number char, that means we are now at the end of the exponent number string
+                    
+                    //break the loop and let the conversion routinge handle the exponent string
+                    breakBit = 1;
+                    break;
+                }else{
+                    //TERM_printDebug(TERM_handle, "\tthat's just a digit :) ");
+                }
+                break;
+        }
+        
+        if(!breakBit) a++;
+    }
+    
+    //are we still waiting for the end on an exponent string?
+    if(state == waitE_Exponent){
+        //yes, we are now at the end of it
+        //TERM_printDebug(TERM_handle, "string ended with end of exponent string ");
+        //found first non sign and non number char, that means we are now at the end of the exponent number string
+
+        //copy that number into a new string for conversion
+        uint32_t i = 0;
+        char exponentBuffer[11];
+        char * exponentStringPosition = startOfNumberExponent;
+        for(; i < 10 && exponentStringPosition != a; i++){
+            exponentBuffer[i] = *(exponentStringPosition++);
+        }
+        //terminate the string
+        exponentBuffer[i] = 0;
+
+        //did we actually get an entire string or was the buffer too small?
+        if(exponentStringPosition == a){
+            //yes that worked, now convert the number to an int with the normal atoi function
+            int32_t newExponent = atoi(exponentBuffer);
+            currentNumberPositionExponent += newExponent;
+
+            //TERM_printDebug(TERM_handle, "\t\tcopied string: \"%s\"=", exponentBuffer, newExponent);
+
+            //now roll back the current char pointer to the 'e' we scanned before entering this state
+            //this is to allow for the conversion to take place as if no numerical exponent existed after the number
+            a = startOfNumberExponent-1;
+        }else{
+            //TERM_printDebug(TERM_handle, "\t\texponent buffer was too small :(");
+            //no didn't work unfortunately, that means the number read was invalid and we must return 0
+            return 0;
+        }
+    }
+    
+    //check if we successfully exited the loop
+    if(startOfNumber == NULL){
+        //no :( no number was found
+        return 0;
+    }
+    
+    //shift the fixed point exponent by the base exponent
+    currentNumberPositionExponent += baseExponent;
+                        
+    //TERM_printDebug(TERM_handle, "Now converting the number with the current exponent of %d (from base %d)", currentNumberPositionExponent, baseExponent);
+    
+    //start of number found, we are now one byte after the end of the number string, step backwards through the string and do the converstion
+    while(*--a != 0 && a >= startOfNumber){
+        //TERM_printDebug(TERM_handle, "\r\n\nscanning letter '%c' (%02x) ", *a, *a);
+        
+        //is the character we are at right now a number?
+        if(isAsciiNumber(*a)){
+            //yes, would it actually be put into the return value? it wouldn't if the exponent was too low or too big
+            if(currentNumberPositionExponent >= 0){
+                if(currentNumberPositionExponent < 10){
+                    //yes, convert it
+                    int32_t currentNumber = ctoi(*a);
+                    
+                    //TERM_printDebug(TERM_handle, "\tconverted digit to int = %d", currentNumber);
+                    
+                    //and finally do a check for a potential overflow if a digit larger than 2 gets multiplied with the largest exponent
+                    if(currentNumberPositionExponent == 9 && currentNumber > 2){
+                        //TERM_printDebug(TERM_handle, "\t=> would overflow :( ");
+                        //yes overflow would occur :(
+                        return 0;
+                    }
+                    
+                    //no overflow would occur, scale the number by the current exponent
+                    currentNumber *= exponentTable[currentNumberPositionExponent];
+                    
+                    //TERM_printDebug(TERM_handle, "\tscaled with exponent %d (10^%d) = %d ", exponentTable[currentNumberPositionExponent], currentNumberPositionExponent, currentNumber);
+                    
+                    ret += currentNumber;
+                    
+                    //TERM_printDebug(TERM_handle, "\tret is now %d ", ret);
+                }else{
+                    //TERM_printDebug(TERM_handle, "\tignoring number due to exponent > 10 (%d)", currentNumberPositionExponent);
+                    //a number with too big of an exponent would be converted, which would cause an overflow. return 0 so the user notices something is wrong
+                    return 0;
+                }
+            }else{
+                //TERM_printDebug(TERM_handle, "\tignoring number due to exponent < 0 (%d)", currentNumberPositionExponent);
+            }
+                    
+            //increase position exponent by one for the digit to the left of us
+            currentNumberPositionExponent++;
+        }else{
+            //TERM_printDebug(TERM_handle, "\tnot a number, skipping character ");
+            //current char is not a number, this should only occur once [perhaps TODO check if that has worked] (as we scan over the point or the exponent). Just skip it
+        }
+    }
+                    
+    //TERM_printDebug(TERM_handle, "conversion done! result without sign = %d ", ret);
+    
+    //and finally return the number taking the sign bit into account
+    return isNumberNegative ? -ret : ret;
 }
