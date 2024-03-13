@@ -2,8 +2,11 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "util.h"
+#if __has_include("ff.h")
 #include "ff.h"
+#endif
+
+#include "util.h"
 #include "TTerm.h"
 #include "System.h"
 
@@ -110,6 +113,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
     return   dYdX  *   localX  + localY;
 }
 
+#if __has_include("ff.h")
 /*
  * Config file tool. Looks through a given file and finds the first line that contains a definition of it
  * 
@@ -356,6 +360,7 @@ char * CONFIG_getKey(FIL * file, char * keyToFind){
     vPortFree(rowBuffer);   
     return NULL;
 }
+#endif
 
 uint32_t isAsciiSpecialCharacter(char c){
     if(c < 32) return 1;
