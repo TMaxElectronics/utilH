@@ -24,9 +24,9 @@
  *      - xValue: x coordinate of the point
  *      - yValue: y coordinate of the point
  *   preComputedDerivative=1:
- *      {xValue,yValue,dX/dY}
+ *      {xValue,yValue,dY/dX}
  *      - x/yValue: as in preComputedDerivative=0
- *      - dX/dY: pre-computed rate of change in between the point and the next one in the list
+ *      - dY/dX: pre-computed rate of change in between the point and the next one in the list
  *  
  *      NOTE: the list must be sorted by x values in ascending order (x[0] < x[1] < x[2]...)
  *      NOTE: if you need this to be fast, make sure to pre-calculate the derivatives as this saves a division for every conversion
@@ -45,7 +45,13 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
     int32_t entry = 0;
     for(entry = 0; entry < listSizeRows; entry++){
         //calculate data pointer to current row. If preComputedDiff is on then there is a third value in the row (dX/dY between the current and next entry) otherwise only 2
-        currentRow = pwl + entry * (preComputedDerivative ? 2 : 3);
+        currentRow = pwl + entry * (preComputedDerivative ? 3 : 2);
+        
+        //check if by any chance x exactly matches the value in the row
+        if(currentRow[0] == x){
+            //oh yes actually it does => just return the y value
+            return currentRow[1];
+        }
         
         //check if the entry we are looking at has a x value larger than the one we are looking for
         if(currentRow[0] > x){
@@ -57,7 +63,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
                 
                 //is there at least one point ahead of us?
                 if(entry + 1 >= listSizeRows){
-                    //hmm no, this shouldn't technicall be possible as we already check for a list size of at least 2. just return, we can't do any calculations now anyway
+                    //hmm no, this shouldn't technically be possible as we already check for a list size of at least 2. just return, we can't do any calculations now anyway
                     
                     //this btw means that we are left of the first point in the graph, but no other point exists after the first one (aka we only have one in total)
                     return 0;
@@ -65,7 +71,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
                 
                 //change the pointers to point to the correct points
                 lastRow     = currentRow;
-                currentRow  = pwl + (entry + 1) * (preComputedDerivative ? 2 : 3);
+                currentRow  = pwl + (entry + 1) * (preComputedDerivative ? 3 : 2);
                 
                 break;
             }
@@ -88,7 +94,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
             return 0;
         }
         
-        lastRow = pwl + (entry-2) * (preComputedDerivative ? 2 : 3);
+        lastRow = pwl + (entry-2) * (preComputedDerivative ? 3 : 2);
     }
     
     //now interpolate between the two points pointed to by lastRow (start point, left of X) and currentRow (end point, right of x))
