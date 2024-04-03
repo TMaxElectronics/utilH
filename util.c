@@ -443,8 +443,11 @@ int32_t atoiFP(char * a, uint32_t strlen, int32_t baseExponent, uint32_t ignoreU
     char* startOfNumber = NULL;
     char* startOfNumberExponent = NULL;
     
+    uint32_t checkForLength = strlen > 0;
+    
     //iterate through the string
-    while(*a != 0 && strlen-- && !breakBit){
+    while(*a != 0 && !breakBit){
+        if(checkForLength) if(!strlen--) break;
         //TERM_printDebug(TERM_handle, "\r\n\nscanning letter '%c' (%02x) ", *a, *a);
         
         int32_t currentExponent = getExponent(*a);
