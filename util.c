@@ -488,7 +488,7 @@ int32_t atoiFP(char * a, uint32_t strlen, int32_t baseExponent, uint32_t ignoreU
                     //current character is neither a valid exponent designator or a number. we likely reached the end of the string we need to parse
                     
                     //check if by any chance this is an 'e' and there is also at least one more char in this string we can scan
-                    if((*a == 'e' || *a == 'E') && strlen){
+                    if((*a == 'e' || *a == 'E') && (!checkForLength || strlen) && *(a+1) != 0){
                         //yes it is
                         if(*(a+1) == '-' || isAsciiNumber(*(a+1))){
                             //TERM_printDebug(TERM_handle, "\tfound start of exponent string ");
