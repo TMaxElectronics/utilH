@@ -1,5 +1,7 @@
 #ifndef UTIL_INC
 #define UTIL_INC
+    
+#include <stdint.h>
 
 #define CONFIG_MAX_LINE_SIZE 128
 #define CONFIG_MAX_LINE_COUNT 128

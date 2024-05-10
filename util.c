@@ -7,9 +7,8 @@
 #include "ff.h"
 #endif
 
-#include "util.h"
+#include "include/util.h"
 #include "TTerm.h"
-#include "System.h"
 
 /*
  * peicewise linear function algorithm, allows for fast lut implementations
@@ -380,6 +379,11 @@ uint32_t isAsciiNumber(char c){
     return 0;
 }
 
+
+
+
+
+
 /*
  * Fixed point atoi function that supports multipliers like k,m,M,c,d etc.
  * 
@@ -706,6 +710,12 @@ int32_t atoiFP(char * a, uint32_t strlen, int32_t baseExponent, uint32_t ignoreU
 
 
 
+/*
+ * LUT based fast sine function
+ * 
+ * parameter is a variable between 0-512 with 512 = 2pi. Return value is 0-500000
+ *     
+ */
 
 
 //256 value sin lookup table x := [0, pi)
