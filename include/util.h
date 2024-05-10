@@ -16,4 +16,6 @@ int32_t atoiFP(char * a, uint32_t strlen, int32_t baseExponent, uint32_t ignoreU
 uint32_t isAsciiNumber(char c);
 uint32_t isAsciiSpecialCharacter(char c);
 
+int32_t qSin(int32_t x);
+
 #endif
