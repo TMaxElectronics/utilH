@@ -13,11 +13,51 @@ char * CONFIG_getKey(FIL * file, char * keyToFind);
 #endif
 
 int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preComputedDerivative);
+
+
+
+
+
+
+
+typedef struct{
+    float a0;
+    float a1;
+    float a2;
+    float a3;
+} NTC_Coefficients_t;
+
+typedef enum{ NTC_MILLI_KELVIN, NTC_MILLI_DEG_CELSIUS, NTC_MILLI_DEG_FAHRENHEIT} NTC_TemperatureUnit_t;
+
+static int32_t NTC_kelvinToUnit(float temperature_K, NTC_TemperatureUnit_t unit);
+static float NTC_unitToKelvin(int32_t temperature, NTC_TemperatureUnit_t unit);
+int32_t NTC_getTemperatureAtResistance(NTC_Coefficients_t * coefficients, float resistance, NTC_TemperatureUnit_t unit);
+float NTC_getResistanceAtTemperature(NTC_Coefficients_t * coefficients, int32_t startTemperature, NTC_TemperatureUnit_t unit);
+int32_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemperature, int32_t endTemperature, uint32_t pointCount, NTC_TemperatureUnit_t unit);
+
+
+
+
+
+
+
 int32_t atoiFP(char * a, uint32_t strlen, int32_t baseExponent, uint32_t ignoreUnit);
+
+
+
+
+
+
+
+int32_t qSin(int32_t x);
+
+
+
+
+
+
 
 uint32_t isAsciiNumber(char c);
 uint32_t isAsciiSpecialCharacter(char c);
-
-int32_t qSin(int32_t x);
 
 #endif

@@ -7,8 +7,11 @@
 #include "ff.h"
 #endif
 
-#include "include/util.h"
+#if __has_include("TTerm.h")
 #include "TTerm.h"
+#endif
+
+#include "include/util.h"
 
 /*
  * peicewise linear function algorithm, allows for fast lut implementations
@@ -109,9 +112,9 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
         //nothing to compute, just read the value from the start point dataset
         dYdX = lastRow[2];
     }else{
-        //dy = currentRow[1] - lastRow[1];
-        //dx = currentRow[0] - lastRow[0];
-        dYdX = (currentRow[1] - lastRow[1]) / (currentRow[0] - lastRow[0]);
+        int32_t dy = currentRow[1] - lastRow[1];
+        int32_t dx = currentRow[0] - lastRow[0];
+        if(dx != 0) dYdX = dy / dx; else dYdX = 0;
     }
 
     //calculate linear function as 
@@ -119,7 +122,129 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
     return   dYdX  *   localX  + localY;
 }
 
-#if __has_include("ff.h")
+/*
+ * NTC Tool - generates a PWL with a specified number of rows that allows for faster conversion of resistance to temperature
+ *      TODO: not sure if we actually need this, but it might be useful: NOTE: for conversion of divider ratio to resistance check NTC_calculateNTCResistance()
+ * 
+ * usage: 
+ *      specify NTC parameters with ntcBaseResistance (f.e. 10k) and the coefficients (available in the datasheet, sometimes called A,B & C instead of a0,a1 & a2)
+ *      List size is determined by the start & endTemperature (I recommend only specifying the temperature region of interest to you here to increase accuracy) and the point Count. Use at least (TODO: figure out how many points are recommended lol)
+ *      select the unit of the PWL with the 
+ * 
+ *      To perform the conversion pass the generated PWL to the PWL_getY() function together with the resistance in Ohms. preComputedDerivative must be set to 1
+ */
+int32_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemperature, int32_t endTemperature, uint32_t pointCount, NTC_TemperatureUnit_t unit){
+//are the parameters valid?
+    if(startTemperature >= endTemperature || pointCount < 2 || coefficients == NULL) return NULL;
+    
+//try to allocate Memory (*3 is for the row size of three int32's)
+    int32_t * pwl = pvPortMalloc(sizeof(int32_t) * 3 * pointCount);
+    if(pwl == NULL) return NULL;    //didn't work => don't even try to continue
+    
+    
+//calculate start and end resistance values. The end value is the one matching the start temperature as we need to sort by ascending resistance
+    
+    float startResistance = NTC_getResistanceAtTemperature(coefficients, endTemperature, unit);
+    float endResistance = NTC_getResistanceAtTemperature(coefficients, startTemperature, unit);
+    float resistanceStep = ((float) endResistance - (float) startResistance) / (float) pointCount;
+    
+    //step through each list entry and calculate the temperature corresponding to the resistance
+    //for reference: PWL format with preComputedDerivative=1 is {xValue,yValue,dY/dX}
+    
+    float currentResistance = startResistance;
+    int32_t * lastRow = NULL;
+    
+    for(int32_t i = 0; i < pointCount; i++){
+        //generate a pointer to the current row
+        int32_t * currentRow = &pwl[i * 3];
+        
+        //first row entry is the x value (in our case the resistance)
+        currentRow[0] = (int32_t) currentResistance;
+        
+        //second row entry is the resulting y value (aka the temperature, converted into the desired unit)
+        currentRow[1] = NTC_getTemperatureAtResistance(coefficients, currentResistance, unit);
+        
+        //third row entry is the derivative between this point and the last
+        //this is always calculated for the last entry instead of the current one, so we skip this for the first entry
+        //we don't need to add a derivative for the very last row of the PWL as it is never used
+        if(i != 0){
+            //derivativce is dy/dx
+            int32_t dy = currentRow[1] - lastRow[1];
+            int32_t dx = currentRow[0] - lastRow[0];
+            if(dx != 0) lastRow[2] = dy / dx; else lastRow[2] = 0;
+        }
+        
+        lastRow = currentRow;
+        currentResistance += resistanceStep;
+    }
+    
+    return pwl;
+}
+
+float NTC_getResistanceAtTemperature(NTC_Coefficients_t * coefficients, int32_t startTemperature, NTC_TemperatureUnit_t unit){
+    //convert temperature to Kelvin
+    float temperature_K = NTC_unitToKelvin(startTemperature, unit);
+    
+    //inverted Steinhart-Hart equation is huge and uses x & y multiple times so pre-compute it
+    float y = (coefficients->a0 - (1 / (float) temperature_K)) / (2.0 * coefficients->a3);
+    float x = sqrt(  powf(coefficients->a1 / (3.0 * coefficients->a3), 3)  +  powf(y, 2) );
+    
+    return exp(cbrt(x-y) - cbrt(x+y));
+}
+
+int32_t NTC_getTemperatureAtResistance(NTC_Coefficients_t * coefficients, float resistance, NTC_TemperatureUnit_t unit){
+    //use Steinhart-Hart equation to calculate the temperature
+    float temperature_K = 1.0 / ( coefficients->a0 + coefficients->a1 * log(resistance) + coefficients->a2 * powf(log(resistance), 2) + coefficients->a3 * powf(log(resistance), 3) );
+    
+    //return the value after converting to the desired unit
+    return NTC_kelvinToUnit(temperature_K, unit);
+}
+
+static int32_t NTC_kelvinToUnit(float temperature_K, NTC_TemperatureUnit_t unit){
+    switch(unit){
+        case NTC_MILLI_KELVIN:
+            return (int32_t) (temperature_K * 1000.0);
+            
+        case NTC_MILLI_DEG_CELSIUS:
+            return (int32_t) ((temperature_K + 273.15) * 1000.0);
+            
+        //TODO: implement conversion to Fahrenheit
+            
+        default: 
+            return 0;
+    }
+}
+
+static float NTC_unitToKelvin(int32_t temperature, NTC_TemperatureUnit_t unit){
+    //convert from a temperature value with specified unit to Kelvin
+    switch(unit){
+        case NTC_MILLI_KELVIN:
+            return (float) temperature / 1000.0;
+            
+        case NTC_MILLI_DEG_CELSIUS:
+            return ((float) temperature / 1000.0) - 273.15;
+            
+        //TODO: implement conversion from Fahrenheit
+            
+        default: 
+            return 0;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /*
  * Config file tool. Looks through a given file and finds the first line that contains a definition of it
  * 
@@ -131,6 +256,8 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
  *      WARNING: maximum line count given by CONFIG_MAX_LINE_COUNT, no more lines will be read
  *      NOTE: value will be trimmed of leading and lagging spaces
  */
+
+#if __has_include("ff.h")
 char * CONFIG_getKey(FIL * file, char * keyToFind){
     //check if the file is value
     if(file < 0xff){
