@@ -7,11 +7,12 @@
 #include "ff.h"
 #endif
 
-#if __has_include("TTerm.h")
+//#if __has_include("TTerm.h")
 #include "TTerm.h"
-#endif
+//#endif
 
 #include "include/util.h"
+#include "../Users/tzethoff/Documents/MPLabProjects/SpeedBox.X/FreeRTOS/Core/include/portable.h"
 
 /*
  * peicewise linear function algorithm, allows for fast lut implementations
@@ -34,8 +35,11 @@
  *      NOTE: the list must be sorted by x values in ascending order (x[0] < x[1] < x[2]...)
  *      NOTE: if you need this to be fast, make sure to pre-calculate the derivatives as this saves a division for every conversion
  */
-int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preComputedDerivative){
-    if(listSizeRows < 2){
+int32_t PWL_getY(int32_t x, Pwl_t * pwl){
+    //check if we even got a PWL
+    if(pwl == NULL) return 0;
+    
+    if(pwl->listSizeRows < 2){
         //can't approximate any function if all we have is a single point. We need at least two
         //configASSERT(0);
         return 0;
@@ -46,9 +50,9 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
     
     //find the neighbouring points
     int32_t entry = 0;
-    for(entry = 0; entry < listSizeRows; entry++){
+    for(entry = 0; entry < pwl->listSizeRows; entry++){
         //calculate data pointer to current row. If preComputedDiff is on then there is a third value in the row (dX/dY between the current and next entry) otherwise only 2
-        currentRow = pwl + entry * (preComputedDerivative ? 3 : 2);
+        currentRow = (pwl->data) + entry * (pwl->preComputedDerivative ? 3 : 2);
         
         //check if by any chance x exactly matches the value in the row
         if(currentRow[0] == x){
@@ -65,7 +69,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
                 //yes we are, that means that the x value we are looking for lies outside the boundary of the pwl. Try to interpolate with the first two points
                 
                 //is there at least one point ahead of us?
-                if(entry + 1 >= listSizeRows){
+                if(entry + 1 >= pwl->listSizeRows){
                     //hmm no, this shouldn't technically be possible as we already check for a list size of at least 2. just return, we can't do any calculations now anyway
                     
                     //this btw means that we are left of the first point in the graph, but no other point exists after the first one (aka we only have one in total)
@@ -74,7 +78,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
                 
                 //change the pointers to point to the correct points
                 lastRow     = currentRow;
-                currentRow  = pwl + (entry + 1) * (preComputedDerivative ? 3 : 2);
+                currentRow  = (pwl->data) + (entry + 1) * (pwl->preComputedDerivative ? 3 : 2);
                 
                 break;
             }
@@ -89,7 +93,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
     
     //check if there was no entry in the list larger than the x we are looking for. If so just use the maximum possible value for calculation.
     if(lastRow == currentRow){
-        //this means loop exited due to entry == listSizeRows. Move lastRow back one entry
+        //this means loop exited due to entry == pwl.listSizeRows. Move lastRow back one entry
         
         //can we actually do that?
         if(entry - 2 < 0){
@@ -97,7 +101,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
             return 0;
         }
         
-        lastRow = pwl + (entry-2) * (preComputedDerivative ? 3 : 2);
+        lastRow = (pwl->data) + (entry-2) * (pwl->preComputedDerivative ? 3 : 2);
     }
     
     //now interpolate between the two points pointed to by lastRow (start point, left of X) and currentRow (end point, right of x))
@@ -108,19 +112,75 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
 
     //calculate derivative of pwl between start and end points
     int32_t dYdX = 0;
-    if(preComputedDerivative){
+    if(pwl->preComputedDerivative){
         //nothing to compute, just read the value from the start point dataset
         dYdX = lastRow[2];
     }else{
-        int32_t dy = currentRow[1] - lastRow[1];
+        int32_t dy = (currentRow[1] - lastRow[1]) * (pwl->preciceDerivative ? 256 : 1);
         int32_t dx = currentRow[0] - lastRow[0];
         if(dx != 0) dYdX = dy / dx; else dYdX = 0;
     }
 
     //calculate linear function as 
     //   y = m     *   x       + b         with m=dYdX, x=localX, b=localY
-    return   dYdX  *   localX  + localY;
+    // option "preciceDerivative" means the derivative value given is multiplied by 256
+    return  (pwl->preciceDerivative ? ((dYdX   *   localX) >> 8)  :  (dYdX  *   localX))  + localY;
 }
+
+/* 
+ * Function to allocate PWL memory
+ * 
+ * note: 
+ *      if data=NULL will cause the function to try to allocate suitably sized memory for it aswell.
+ *      You can specify a data pointer if you want something like a dynamically allocated header but a const dataset
+ */
+Pwl_t * PWL_create(int32_t * data, uint32_t rowCount, uint32_t preComputedDerivative, uint32_t preciceDerivative){
+    
+//try to allocate pwl header memory
+    Pwl_t * pwl = pvPortMalloc(sizeof(Pwl_t));
+    if(pwl == NULL) return NULL;    //didn't work => don't even try to continue
+    
+    pwl->listSizeRows = rowCount;
+    pwl->preComputedDerivative = preComputedDerivative;
+    pwl->preciceDerivative = preciceDerivative;
+    
+//do we need to allocate data memory?
+    if(data == NULL){
+        //yes! => try to do so (*3 is for the row size of three int32's)
+        pwl->data = pvPortMalloc(sizeof(int32_t) * (preComputedDerivative ? 3 : 2) * rowCount);
+        
+        if(pwl->data == NULL){ 
+            vPortFree(pwl);
+            return NULL;    //didn't work => don't even try to continue
+        }
+    }else{
+        //no. Just assign the data the caller gave us
+        pwl->data = data;
+    }
+    
+    return pwl;
+}
+
+/* 
+ * Function to free a PWLs memory
+ */
+void PWL_delete(Pwl_t * pwl, uint32_t freeData){
+    //is there anything to free?
+    if(pwl == NULL) return;
+    
+    //do we need to free the data? If yes then do so
+    if(freeData) vPortFree(pwl->data);
+    
+    //free the header
+    vPortFree(pwl);
+}
+
+
+
+
+
+
+
 
 /*
  * NTC Tool - generates a PWL with a specified number of rows that allows for faster conversion of resistance to temperature
@@ -133,14 +193,13 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
  * 
  *      To perform the conversion pass the generated PWL to the PWL_getY() function together with the resistance in Ohms. preComputedDerivative must be set to 1
  */
-int32_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemperature, int32_t endTemperature, uint32_t pointCount, NTC_TemperatureUnit_t unit){
+Pwl_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemperature, int32_t endTemperature, uint32_t pointCount, NTC_TemperatureUnit_t unit){
 //are the parameters valid?
     if(startTemperature >= endTemperature || pointCount < 2 || coefficients == NULL) return NULL;
     
-//try to allocate Memory (*3 is for the row size of three int32's)
-    int32_t * pwl = pvPortMalloc(sizeof(int32_t) * 3 * pointCount);
-    if(pwl == NULL) return NULL;    //didn't work => don't even try to continue
-    
+//create a new PWL. Just return if that doesn't work
+    Pwl_t * pwl = PWL_create(NULL, pointCount, 1, 1);
+    if(pwl == NULL) return NULL;
     
 //calculate start and end resistance values. The end value is the one matching the start temperature as we need to sort by ascending resistance
     
@@ -156,7 +215,7 @@ int32_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemper
     
     for(int32_t i = 0; i < pointCount; i++){
         //generate a pointer to the current row
-        int32_t * currentRow = &pwl[i * 3];
+        int32_t * currentRow = &(pwl->data[i * 3]);
         
         //first row entry is the x value (in our case the resistance)
         currentRow[0] = (int32_t) currentResistance;
@@ -169,7 +228,7 @@ int32_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemper
         //we don't need to add a derivative for the very last row of the PWL as it is never used
         if(i != 0){
             //derivativce is dy/dx
-            int32_t dy = currentRow[1] - lastRow[1];
+            int32_t dy = (currentRow[1] - lastRow[1]) * 256;
             int32_t dx = currentRow[0] - lastRow[0];
             if(dx != 0) lastRow[2] = dy / dx; else lastRow[2] = 0;
         }
@@ -181,20 +240,18 @@ int32_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemper
     return pwl;
 }
 
-float NTC_getResistanceAtTemperature(NTC_Coefficients_t * coefficients, int32_t startTemperature, NTC_TemperatureUnit_t unit){
+float NTC_getResistanceAtTemperature(NTC_Coefficients_t * coefficients, int32_t temperature, NTC_TemperatureUnit_t unit){
     //convert temperature to Kelvin
-    float temperature_K = NTC_unitToKelvin(startTemperature, unit);
+    float t1_K = NTC_unitToKelvin(temperature, unit);
     
-    //inverted Steinhart-Hart equation is huge and uses x & y multiple times so pre-compute it
-    float y = (coefficients->a0 - (1 / (float) temperature_K)) / (2.0 * coefficients->a3);
-    float x = sqrt(  powf(coefficients->a1 / (3.0 * coefficients->a3), 3)  +  powf(y, 2) );
-    
-    return exp(cbrt(x-y) - cbrt(x+y));
+    //calculate Resistance according to Beta formula
+    // R1 = R0 * exp(Beta * (1/T1 - 1/T0))
+    return coefficients->R0 * exp(coefficients->Beta * ((1/t1_K) - (1/coefficients->T0)));
 }
 
 int32_t NTC_getTemperatureAtResistance(NTC_Coefficients_t * coefficients, float resistance, NTC_TemperatureUnit_t unit){
-    //use Steinhart-Hart equation to calculate the temperature
-    float temperature_K = 1.0 / ( coefficients->a0 + coefficients->a1 * log(resistance) + coefficients->a2 * powf(log(resistance), 2) + coefficients->a3 * powf(log(resistance), 3) );
+    //use the Beta formula to calculate the temperature
+    float temperature_K = 1.0 / ( (log(resistance / coefficients->R0) / coefficients->Beta ) + 1.0 / coefficients->T0);
     
     //return the value after converting to the desired unit
     return NTC_kelvinToUnit(temperature_K, unit);
@@ -206,7 +263,7 @@ static int32_t NTC_kelvinToUnit(float temperature_K, NTC_TemperatureUnit_t unit)
             return (int32_t) (temperature_K * 1000.0);
             
         case NTC_MILLI_DEG_CELSIUS:
-            return (int32_t) ((temperature_K + 273.15) * 1000.0);
+            return (int32_t) ((temperature_K - 273.15) * 1000.0);
             
         //TODO: implement conversion to Fahrenheit
             
@@ -222,7 +279,7 @@ static float NTC_unitToKelvin(int32_t temperature, NTC_TemperatureUnit_t unit){
             return (float) temperature / 1000.0;
             
         case NTC_MILLI_DEG_CELSIUS:
-            return ((float) temperature / 1000.0) - 273.15;
+            return ((float) temperature / 1000.0) + 273.15;
             
         //TODO: implement conversion from Fahrenheit
             
