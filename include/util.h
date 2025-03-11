@@ -4,6 +4,9 @@
 #define CONFIG_MAX_LINE_SIZE 128
 #define CONFIG_MAX_LINE_COUNT 128
 
+//a handy define to get the size of an array
+#define arraySize(X) (sizeof(X) / sizeof(X[0]))
+
 #if __has_include("ff.h")
 #include "ff.h"
 
