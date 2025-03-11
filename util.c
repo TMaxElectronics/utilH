@@ -1,14 +1,18 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #if __has_include("ff.h")
 #include "ff.h"
 #endif
 
-#include "util.h"
+//#if __has_include("TTerm.h")
 #include "TTerm.h"
-#include "System.h"
+//#endif
+
+#include "include/util.h"
+#include "../Users/tzethoff/Documents/MPLabProjects/SpeedBox.X/FreeRTOS/Core/include/portable.h"
 
 /*
  * peicewise linear function algorithm, allows for fast lut implementations
@@ -31,8 +35,11 @@
  *      NOTE: the list must be sorted by x values in ascending order (x[0] < x[1] < x[2]...)
  *      NOTE: if you need this to be fast, make sure to pre-calculate the derivatives as this saves a division for every conversion
  */
-int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preComputedDerivative){
-    if(listSizeRows < 2){
+int32_t PWL_getY(int32_t x, Pwl_t * pwl){
+    //check if we even got a PWL
+    if(pwl == NULL) return 0;
+    
+    if(pwl->listSizeRows < 2){
         //can't approximate any function if all we have is a single point. We need at least two
         //configASSERT(0);
         return 0;
@@ -43,9 +50,9 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
     
     //find the neighbouring points
     int32_t entry = 0;
-    for(entry = 0; entry < listSizeRows; entry++){
+    for(entry = 0; entry < pwl->listSizeRows; entry++){
         //calculate data pointer to current row. If preComputedDiff is on then there is a third value in the row (dX/dY between the current and next entry) otherwise only 2
-        currentRow = pwl + entry * (preComputedDerivative ? 3 : 2);
+        currentRow = (pwl->data) + entry * (pwl->preComputedDerivative ? 3 : 2);
         
         //check if by any chance x exactly matches the value in the row
         if(currentRow[0] == x){
@@ -62,7 +69,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
                 //yes we are, that means that the x value we are looking for lies outside the boundary of the pwl. Try to interpolate with the first two points
                 
                 //is there at least one point ahead of us?
-                if(entry + 1 >= listSizeRows){
+                if(entry + 1 >= pwl->listSizeRows){
                     //hmm no, this shouldn't technically be possible as we already check for a list size of at least 2. just return, we can't do any calculations now anyway
                     
                     //this btw means that we are left of the first point in the graph, but no other point exists after the first one (aka we only have one in total)
@@ -71,7 +78,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
                 
                 //change the pointers to point to the correct points
                 lastRow     = currentRow;
-                currentRow  = pwl + (entry + 1) * (preComputedDerivative ? 3 : 2);
+                currentRow  = (pwl->data) + (entry + 1) * (pwl->preComputedDerivative ? 3 : 2);
                 
                 break;
             }
@@ -86,7 +93,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
     
     //check if there was no entry in the list larger than the x we are looking for. If so just use the maximum possible value for calculation.
     if(lastRow == currentRow){
-        //this means loop exited due to entry == listSizeRows. Move lastRow back one entry
+        //this means loop exited due to entry == pwl.listSizeRows. Move lastRow back one entry
         
         //can we actually do that?
         if(entry - 2 < 0){
@@ -94,7 +101,7 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
             return 0;
         }
         
-        lastRow = pwl + (entry-2) * (preComputedDerivative ? 3 : 2);
+        lastRow = (pwl->data) + (entry-2) * (pwl->preComputedDerivative ? 3 : 2);
     }
     
     //now interpolate between the two points pointed to by lastRow (start point, left of X) and currentRow (end point, right of x))
@@ -105,21 +112,196 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
 
     //calculate derivative of pwl between start and end points
     int32_t dYdX = 0;
-    if(preComputedDerivative){
+    if(pwl->preComputedDerivative){
         //nothing to compute, just read the value from the start point dataset
         dYdX = lastRow[2];
     }else{
-        //dy = currentRow[1] - lastRow[1];
-        //dx = currentRow[0] - lastRow[0];
-        dYdX = (currentRow[1] - lastRow[1]) / (currentRow[0] - lastRow[0]);
+        int32_t dy = (currentRow[1] - lastRow[1]) * (pwl->preciceDerivative ? 256 : 1);
+        int32_t dx = currentRow[0] - lastRow[0];
+        if(dx != 0) dYdX = dy / dx; else dYdX = 0;
     }
 
     //calculate linear function as 
     //   y = m     *   x       + b         with m=dYdX, x=localX, b=localY
-    return   dYdX  *   localX  + localY;
+    // option "preciceDerivative" means the derivative value given is multiplied by 256
+    return  (pwl->preciceDerivative ? ((dYdX   *   localX) >> 8)  :  (dYdX  *   localX))  + localY;
 }
 
-#if __has_include("ff.h")
+/* 
+ * Function to allocate PWL memory
+ * 
+ * note: 
+ *      if data=NULL will cause the function to try to allocate suitably sized memory for it aswell.
+ *      You can specify a data pointer if you want something like a dynamically allocated header but a const dataset
+ */
+Pwl_t * PWL_create(int32_t * data, uint32_t rowCount, uint32_t preComputedDerivative, uint32_t preciceDerivative){
+    
+//try to allocate pwl header memory
+    Pwl_t * pwl = pvPortMalloc(sizeof(Pwl_t));
+    if(pwl == NULL) return NULL;    //didn't work => don't even try to continue
+    
+    pwl->listSizeRows = rowCount;
+    pwl->preComputedDerivative = preComputedDerivative;
+    pwl->preciceDerivative = preciceDerivative;
+    
+//do we need to allocate data memory?
+    if(data == NULL){
+        //yes! => try to do so (*3 is for the row size of three int32's)
+        pwl->data = pvPortMalloc(sizeof(int32_t) * (preComputedDerivative ? 3 : 2) * rowCount);
+        
+        if(pwl->data == NULL){ 
+            vPortFree(pwl);
+            return NULL;    //didn't work => don't even try to continue
+        }
+    }else{
+        //no. Just assign the data the caller gave us
+        pwl->data = data;
+    }
+    
+    return pwl;
+}
+
+/* 
+ * Function to free a PWLs memory
+ */
+void PWL_delete(Pwl_t * pwl, uint32_t freeData){
+    //is there anything to free?
+    if(pwl == NULL) return;
+    
+    //do we need to free the data? If yes then do so
+    if(freeData) vPortFree(pwl->data);
+    
+    //free the header
+    vPortFree(pwl);
+}
+
+
+
+
+
+
+
+
+/*
+ * NTC Tool - generates a PWL with a specified number of rows that allows for faster conversion of resistance to temperature
+ *      TODO: not sure if we actually need this, but it might be useful: NOTE: for conversion of divider ratio to resistance check NTC_calculateNTCResistance()
+ * 
+ * usage: 
+ *      specify NTC parameters with ntcBaseResistance (f.e. 10k) and the coefficients (available in the datasheet, sometimes called A,B & C instead of a0,a1 & a2)
+ *      List size is determined by the start & endTemperature (I recommend only specifying the temperature region of interest to you here to increase accuracy) and the point Count. Use at least (TODO: figure out how many points are recommended lol)
+ *      select the unit of the PWL with the 
+ * 
+ *      To perform the conversion pass the generated PWL to the PWL_getY() function together with the resistance in Ohms. preComputedDerivative must be set to 1
+ */
+Pwl_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemperature, int32_t endTemperature, uint32_t pointCount, NTC_TemperatureUnit_t unit){
+//are the parameters valid?
+    if(startTemperature >= endTemperature || pointCount < 2 || coefficients == NULL) return NULL;
+    
+//create a new PWL. Just return if that doesn't work
+    Pwl_t * pwl = PWL_create(NULL, pointCount, 1, 1);
+    if(pwl == NULL) return NULL;
+    
+//calculate start and end resistance values. The end value is the one matching the start temperature as we need to sort by ascending resistance
+    
+    float startResistance = NTC_getResistanceAtTemperature(coefficients, endTemperature, unit);
+    float endResistance = NTC_getResistanceAtTemperature(coefficients, startTemperature, unit);
+    float resistanceStep = ((float) endResistance - (float) startResistance) / (float) pointCount;
+    
+    //step through each list entry and calculate the temperature corresponding to the resistance
+    //for reference: PWL format with preComputedDerivative=1 is {xValue,yValue,dY/dX}
+    
+    float currentResistance = startResistance;
+    int32_t * lastRow = NULL;
+    
+    for(int32_t i = 0; i < pointCount; i++){
+        //generate a pointer to the current row
+        int32_t * currentRow = &(pwl->data[i * 3]);
+        
+        //first row entry is the x value (in our case the resistance)
+        currentRow[0] = (int32_t) currentResistance;
+        
+        //second row entry is the resulting y value (aka the temperature, converted into the desired unit)
+        currentRow[1] = NTC_getTemperatureAtResistance(coefficients, currentResistance, unit);
+        
+        //third row entry is the derivative between this point and the last
+        //this is always calculated for the last entry instead of the current one, so we skip this for the first entry
+        //we don't need to add a derivative for the very last row of the PWL as it is never used
+        if(i != 0){
+            //derivativce is dy/dx
+            int32_t dy = (currentRow[1] - lastRow[1]) * 256;
+            int32_t dx = currentRow[0] - lastRow[0];
+            if(dx != 0) lastRow[2] = dy / dx; else lastRow[2] = 0;
+        }
+        
+        lastRow = currentRow;
+        currentResistance += resistanceStep;
+    }
+    
+    return pwl;
+}
+
+float NTC_getResistanceAtTemperature(NTC_Coefficients_t * coefficients, int32_t temperature, NTC_TemperatureUnit_t unit){
+    //convert temperature to Kelvin
+    float t1_K = NTC_unitToKelvin(temperature, unit);
+    
+    //calculate Resistance according to Beta formula
+    // R1 = R0 * exp(Beta * (1/T1 - 1/T0))
+    return coefficients->R0 * exp(coefficients->Beta * ((1/t1_K) - (1/coefficients->T0)));
+}
+
+int32_t NTC_getTemperatureAtResistance(NTC_Coefficients_t * coefficients, float resistance, NTC_TemperatureUnit_t unit){
+    //use the Beta formula to calculate the temperature
+    float temperature_K = 1.0 / ( (log(resistance / coefficients->R0) / coefficients->Beta ) + 1.0 / coefficients->T0);
+    
+    //return the value after converting to the desired unit
+    return NTC_kelvinToUnit(temperature_K, unit);
+}
+
+static int32_t NTC_kelvinToUnit(float temperature_K, NTC_TemperatureUnit_t unit){
+    switch(unit){
+        case NTC_MILLI_KELVIN:
+            return (int32_t) (temperature_K * 1000.0);
+            
+        case NTC_MILLI_DEG_CELSIUS:
+            return (int32_t) ((temperature_K - 273.15) * 1000.0);
+            
+        //TODO: implement conversion to Fahrenheit
+            
+        default: 
+            return 0;
+    }
+}
+
+static float NTC_unitToKelvin(int32_t temperature, NTC_TemperatureUnit_t unit){
+    //convert from a temperature value with specified unit to Kelvin
+    switch(unit){
+        case NTC_MILLI_KELVIN:
+            return (float) temperature / 1000.0;
+            
+        case NTC_MILLI_DEG_CELSIUS:
+            return ((float) temperature / 1000.0) + 273.15;
+            
+        //TODO: implement conversion from Fahrenheit
+            
+        default: 
+            return 0;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /*
  * Config file tool. Looks through a given file and finds the first line that contains a definition of it
  * 
@@ -131,6 +313,8 @@ int32_t PWL_getY(int32_t x, int32_t * pwl, uint32_t listSizeRows, uint32_t preCo
  *      WARNING: maximum line count given by CONFIG_MAX_LINE_COUNT, no more lines will be read
  *      NOTE: value will be trimmed of leading and lagging spaces
  */
+
+#if __has_include("ff.h")
 char * CONFIG_getKey(FIL * file, char * keyToFind){
     //check if the file is value
     if(file < 0xff){
@@ -378,6 +562,11 @@ uint32_t isAsciiNumber(char c){
     if(c >= '0' && c <= '9') return 1;
     return 0;
 }
+
+
+
+
+
 
 /*
  * Fixed point atoi function that supports multipliers like k,m,M,c,d etc.
@@ -695,4 +884,31 @@ int32_t atoiFP(char * a, uint32_t strlen, int32_t baseExponent, uint32_t ignoreU
     
     //and finally return the number taking the sign bit into account
     return isNumberNegative ? -ret : ret;
+}
+
+
+
+
+
+
+
+
+
+/*
+ * LUT based fast sine function
+ * 
+ * parameter is a variable between 0-512 with 512 = 2pi. Return value is 0-500000
+ *     
+ */
+
+
+//256 value sin lookup table x := [0, pi)
+//TODO reduce this by half, symmetry's a bitch ;)
+static const int32_t sineTable[] = {0, 6135, 12270, 18403, 24533, 30660, 36782, 42898, 49008, 55111, 61205, 67290, 73365, 79429, 85480, 91519, 97545, 103555, 109550, 115529, 121490, 127432, 133356, 139259, 145142, 151002, 156840, 162655, 168444, 174209, 179947, 185658, 191341, 196996, 202620, 208214, 213777, 219308, 224805, 230269, 235698, 241091, 246449, 251769, 257051, 262294, 267498, 272662, 277785, 282865, 287904, 292898, 297849, 302755, 307615, 312429, 317196, 321915, 326586, 331207, 335779, 340300, 344770, 349188, 353553, 357865, 362123, 366327, 370475, 374568, 378604, 382583, 386505, 390368, 394173, 397918, 401603, 405228, 408792, 412294, 415734, 419112, 422426, 425677, 428864, 431986, 435043, 438035, 440960, 443819, 446612, 449337, 451994, 454583, 457104, 459556, 461939, 464253, 466496, 468669, 470772, 472803, 474764, 476653, 478470, 480215, 481888, 483488, 485015, 486469, 487851, 489158, 490392, 491552, 492638, 493650, 494588, 495451, 496239, 496953, 497592, 498156, 498645, 499059, 499397, 499661, 499849, 499962, 500000, 499962, 499849, 499661, 499397, 499059, 498645, 498156, 497592, 496953, 496239, 495451, 494588, 493650, 492638, 491552, 490392, 489158, 487851, 486469, 485015, 483488, 481888, 480215, 478470, 476653, 474764, 472803, 470772, 468669, 466496, 464253, 461939, 459556, 457104, 454583, 451994, 449337, 446612, 443819, 440960, 438035, 435043, 431986, 428864, 425677, 422426, 419112, 415734, 412294, 408792, 405228, 401603, 397918, 394173, 390368, 386505, 382583, 378604, 374568, 370475, 366327, 362123, 357865, 353553, 349188, 344770, 340300, 335779, 331207, 326586, 321915, 317196, 312429, 307615, 302755, 297849, 292898, 287904, 282865, 277785, 272662, 267498, 262294, 257051, 251769, 246449, 241091, 235698, 230269, 224805, 219308, 213777, 208214, 202620, 196996, 191341, 185658, 179947, 174209, 168444, 162655, 156840, 151002, 145142, 139259, 133356, 127432, 121490, 115529, 109550, 103555, 97545, 91519, 85480, 79429, 73365, 67290, 61205, 55111, 49008, 42898, 36782, 30660, 24533, 18403, 12270, 6135};
+
+int32_t qSin(int32_t x){
+    int32_t xt = abs(x) % 0xff;
+    
+    if(xt == 0) return 0;
+    return (x > 0) ? sineTable[xt] : -sineTable[xt];
 }
