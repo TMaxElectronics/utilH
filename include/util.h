@@ -9,7 +9,7 @@
 //a handy define to get the size of an array
 #define arraySize(X) (sizeof(X) / sizeof(X[0]))
 
-#if __has_include("ff.h")
+#if !__is_compiling || __has_include("ff.h")
 #include "ff.h"
 
 char * CONFIG_getKey(FIL * file, char * keyToFind);

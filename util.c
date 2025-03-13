@@ -3,16 +3,15 @@
 #include <stdlib.h>
 #include <math.h>
 
-#if __has_include("ff.h")
+#if !__is_compiling || __has_include("ff.h")
 #include "ff.h"
 #endif
 
-//#if __has_include("TTerm.h")
+#if !__is_compiling || __has_include("TTerm.h")
 #include "TTerm.h"
-//#endif
+#endif
 
 #include "include/util.h"
-#include "../Users/tzethoff/Documents/MPLabProjects/SpeedBox.X/FreeRTOS/Core/include/portable.h"
 
 /*
  * peicewise linear function algorithm, allows for fast lut implementations
@@ -314,7 +313,7 @@ static float NTC_unitToKelvin(int32_t temperature, NTC_TemperatureUnit_t unit){
  *      NOTE: value will be trimmed of leading and lagging spaces
  */
 
-#if __has_include("ff.h")
+#if !__is_compiling || __has_include("ff.h")
 char * CONFIG_getKey(FIL * file, char * keyToFind){
     //check if the file is value
     if(file < 0xff){
