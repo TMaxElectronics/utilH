@@ -24,6 +24,9 @@ typedef struct{
     int32_t * data;
 } Pwl_t;
 
+//calculates the datasize for a pwl from values in the descriptor
+#define PWL_getDataSize(pwl) (pwl->listSizeRows * sizeof(int32_t) * (pwl->preComputedDerivative ? 3 : 2))
+
 int32_t PWL_getY(int32_t x, Pwl_t * pwl);
 void PWL_delete(Pwl_t * pwl, uint32_t freeData);
 Pwl_t * PWL_create(int32_t * data, uint32_t rowCount, uint32_t preComputedDerivative, uint32_t preciceDerivative);
