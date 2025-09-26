@@ -12,7 +12,6 @@
 //#endif
 
 #include "include/util.h"
-#include "../Users/tzethoff/Documents/MPLabProjects/SpeedBox.X/FreeRTOS/Core/include/portable.h"
 
 /*
  * peicewise linear function algorithm, allows for fast lut implementations
@@ -187,11 +186,11 @@ void PWL_delete(Pwl_t * pwl, uint32_t freeData){
  *      TODO: not sure if we actually need this, but it might be useful: NOTE: for conversion of divider ratio to resistance check NTC_calculateNTCResistance()
  * 
  * usage: 
- *      specify NTC parameters with ntcBaseResistance (f.e. 10k) and the coefficients (available in the datasheet, sometimes called A,B & C instead of a0,a1 & a2)
+ *      specify NTC type with the coefficients (R0, T0 and Beta are all needed)
  *      List size is determined by the start & endTemperature (I recommend only specifying the temperature region of interest to you here to increase accuracy) and the point Count. Use at least (TODO: figure out how many points are recommended lol)
- *      select the unit of the PWL with the 
+ *      select the unit of the PWL with the NTC_TemperatureUnit_t field
  * 
- *      To perform the conversion pass the generated PWL to the PWL_getY() function together with the resistance in Ohms. preComputedDerivative must be set to 1
+ *      To perform the conversion pass the generated PWL to the PWL_getY() function together with the resistance in Ohms
  */
 Pwl_t * NTC_generatePWL(NTC_Coefficients_t * coefficients, int32_t startTemperature, int32_t endTemperature, uint32_t pointCount, NTC_TemperatureUnit_t unit){
 //are the parameters valid?
